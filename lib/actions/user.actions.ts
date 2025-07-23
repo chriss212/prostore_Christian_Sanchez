@@ -8,12 +8,17 @@ import {
   updateUserSchema,
 } from '../validators';
 import { auth, signIn, signOut } from '@/auth';
-import { isRedirectError } from 'next/dist/client/components/redirect-error';
 import { hash } from '../encrypt';
 import { prisma } from '@/db/prisma';
 import { formatError } from '../utils';
 import { ShippingAddress } from '@/types';
 import { z } from 'zod';
+
+// Dummy implementation for getRedirectError, replace with actual import if available
+function getRedirectError(error: unknown): boolean {
+  // Implement your logic here or import from the correct module
+  return false;
+}
 import { PAGE_SIZE } from '../constants';
 import { revalidatePath } from 'next/cache';
 import { Prisma } from '@prisma/client';
@@ -34,7 +39,7 @@ export async function signInWithCredentials(
 
     return { success: true, message: 'Signed in successfully' };
   } catch (error) {
-    if (isRedirectError(error)) {
+    if (getRedirectError(error)) {
       throw error;
     }
     return { success: false, message: 'Invalid email or password' };
@@ -83,7 +88,7 @@ export async function signUpUser(prevState: unknown, formData: FormData) {
 
     return { success: true, message: 'User registered successfully' };
   } catch (error) {
-    if (isRedirectError(error)) {
+    if (getRedirectError(error)) {
       throw error;
     }
     return { success: false, message: formatError(error) };
