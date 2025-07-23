@@ -41,7 +41,7 @@ export async function signInWithCredentials(
         password: '',
       },
     };
-  } catch (_) {
+  } catch (error) {
     return {
       success: false,
       message: 'Invalid email or password',
