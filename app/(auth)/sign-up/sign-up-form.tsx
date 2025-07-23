@@ -11,10 +11,32 @@ import { signUpUser } from '@/lib/actions/user.actions';
 import { useSearchParams } from 'next/navigation';
 
 const SignUpForm = () => {
-  const [data, action] = useActionState(signUpUser, {
-    success: false,
-    message: '',
-  });
+  const [data, action] = useActionState(
+    async (
+      prevState: {
+        success: boolean;
+        message: string;
+        formData: {
+          name: string;
+          email: string;
+          password: string;
+          confirmPassword: string;
+        };
+      },
+      formData: FormData
+    ) => await signUpUser(prevState, formData),
+    {
+      success: false,
+      message: '',
+      formData: {
+        name: '',
+        email: '',
+        password: '',
+        confirmPassword: '',
+      },
+    }
+  );
+
 
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get('callbackUrl') || '/';
