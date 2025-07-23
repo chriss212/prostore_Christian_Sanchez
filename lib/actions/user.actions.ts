@@ -8,21 +8,17 @@ import {
   updateUserSchema,
 } from '../validators';
 import { auth, signIn, signOut } from '@/auth';
+
 import { hash } from '../encrypt';
 import { prisma } from '@/db/prisma';
 import { formatError } from '../utils';
 import { ShippingAddress } from '@/types';
 import { z } from 'zod';
-
-// Dummy implementation for getRedirectError, replace with actual import if available
-function getRedirectError(error: unknown): boolean {
-  // Implement your logic here or import from the correct module
-  return false;
-}
 import { PAGE_SIZE } from '../constants';
 import { revalidatePath } from 'next/cache';
 import { Prisma } from '@prisma/client';
 import { getMyCart } from './cart.actions';
+import { redirect } from 'next/navigation';
 
 // Sign in the user with credentials
 export async function signInWithCredentials(
@@ -37,12 +33,23 @@ export async function signInWithCredentials(
 
     await signIn('credentials', user);
 
-    return { success: true, message: 'Signed in successfully' };
-  } catch (error) {
-    if (getRedirectError(error)) {
-      throw error;
-    }
-    return { success: false, message: 'Invalid email or password' };
+    return {
+      success: true,
+      message: 'Signed in successfully',
+      formData: {
+        email: '',
+        password: '',
+      },
+    };
+  } catch {
+    return {
+      success: false,
+      message: 'Invalid email or password',
+      formData: {
+        email: (formData.get('email') as string) || '',
+        password: (formData.get('password') as string) || '',
+      },
+    };
   }
 }
 
@@ -70,6 +77,7 @@ export async function signUpUser(prevState: unknown, formData: FormData) {
     });
 
     const plainPassword = user.password;
+    const callbackUrl = (formData.get('callbackUrl') as string) || '/';
 
     user.password = await hash(user.password);
 
@@ -81,17 +89,27 @@ export async function signUpUser(prevState: unknown, formData: FormData) {
       },
     });
 
+    // Sign in the user after successful registration
     await signIn('credentials', {
       email: user.email,
       password: plainPassword,
+      redirect: false, // Don't redirect automatically
     });
 
-    return { success: true, message: 'User registered successfully' };
+    // Redirect to the callback URL or home page
+    redirect(callbackUrl);
   } catch (error) {
-    if (getRedirectError(error)) {
-      throw error;
-    }
-    return { success: false, message: formatError(error) };
+    // Return the form data so the form can preserve user input
+    return {
+      success: false,
+      message: formatError(error),
+      formData: {
+        name: (formData.get('name') as string) || '',
+        email: (formData.get('email') as string) || '',
+        password: (formData.get('password') as string) || '',
+        confirmPassword: (formData.get('confirmPassword') as string) || '',
+      },
+    };
   }
 }
 
