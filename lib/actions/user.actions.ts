@@ -20,7 +20,6 @@ import { Prisma } from '@prisma/client';
 import { getMyCart } from './cart.actions';
 import { redirect } from 'next/navigation';
 
-// Sign in the user with credentials
 export async function signInWithCredentials(
   prevState: unknown,
   formData: FormData
@@ -53,9 +52,7 @@ export async function signInWithCredentials(
   }
 }
 
-// Sign user out
 export async function signOutUser() {
-  // get current users cart and delete it so it does not persist to next user
   const currentCart = await getMyCart();
 
   if (currentCart?.id) {
@@ -63,10 +60,10 @@ export async function signOutUser() {
   } else {
     console.warn('No cart found for deletion.');
   }
+
   await signOut();
 }
 
-// Sign up user
 export async function signUpUser(prevState: unknown, formData: FormData) {
   try {
     const user = signUpFormSchema.parse({
@@ -89,20 +86,17 @@ export async function signUpUser(prevState: unknown, formData: FormData) {
       },
     });
 
-    // Sign in the user after successful registration
     await signIn('credentials', {
       email: user.email,
       password: plainPassword,
-      redirect: false, // Don't redirect automatically
+      redirect: false,
     });
 
-    // Redirect to the callback URL or home page
     redirect(callbackUrl);
-  } catch (error) {
-    // Return the form data so the form can preserve user input
+  } catch (error: unknown) {
     return {
       success: false,
-      message: formatError(error),
+      message: formatError(error as Error),
       formData: {
         name: (formData.get('name') as string) || '',
         email: (formData.get('email') as string) || '',
@@ -113,7 +107,6 @@ export async function signUpUser(prevState: unknown, formData: FormData) {
   }
 }
 
-// Get user by the ID
 export async function getUserById(userId: string) {
   const user = await prisma.user.findFirst({
     where: { id: userId },
@@ -122,7 +115,6 @@ export async function getUserById(userId: string) {
   return user;
 }
 
-// Update the user's address
 export async function updateUserAddress(data: ShippingAddress) {
   try {
     const session = await auth();
@@ -144,12 +136,11 @@ export async function updateUserAddress(data: ShippingAddress) {
       success: true,
       message: 'User updated successfully',
     };
-  } catch (error) {
-    return { success: false, message: formatError(error) };
+  } catch (error: unknown) {
+    return { success: false, message: formatError(error as Error) };
   }
 }
 
-// Update user's payment method
 export async function updateUserPaymentMethod(
   data: z.infer<typeof paymentMethodSchema>
 ) {
@@ -172,12 +163,11 @@ export async function updateUserPaymentMethod(
       success: true,
       message: 'User updated successfully',
     };
-  } catch (error) {
-    return { success: false, message: formatError(error) };
+  } catch (error: unknown) {
+    return { success: false, message: formatError(error as Error) };
   }
 }
 
-// Update the user profile
 export async function updateProfile(user: { name: string; email: string }) {
   try {
     const session = await auth();
@@ -203,12 +193,11 @@ export async function updateProfile(user: { name: string; email: string }) {
       success: true,
       message: 'User updated successfully',
     };
-  } catch (error) {
-    return { success: false, message: formatError(error) };
+  } catch (error: unknown) {
+    return { success: false, message: formatError(error as Error) };
   }
 }
 
-// Get all the users
 export async function getAllUsers({
   limit = PAGE_SIZE,
   page,
@@ -245,7 +234,6 @@ export async function getAllUsers({
   };
 }
 
-// Delete a user
 export async function deleteUser(id: string) {
   try {
     await prisma.user.delete({ where: { id } });
@@ -256,15 +244,14 @@ export async function deleteUser(id: string) {
       success: true,
       message: 'User deleted successfully',
     };
-  } catch (error) {
+  } catch (error: unknown) {
     return {
       success: false,
-      message: formatError(error),
+      message: formatError(error as Error),
     };
   }
 }
 
-// Update a user
 export async function updateUser(user: z.infer<typeof updateUserSchema>) {
   try {
     await prisma.user.update({
@@ -281,7 +268,7 @@ export async function updateUser(user: z.infer<typeof updateUserSchema>) {
       success: true,
       message: 'User updated successfully',
     };
-  } catch (error) {
-    return { success: false, message: formatError(error) };
+  } catch (error: unknown) {
+    return { success: false, message: formatError(error as Error) };
   }
 }
