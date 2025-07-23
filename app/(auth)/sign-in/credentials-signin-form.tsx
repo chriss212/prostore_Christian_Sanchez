@@ -11,10 +11,29 @@ import { signInWithCredentials } from '@/lib/actions/user.actions';
 import { useSearchParams } from 'next/navigation';
 
 const CredentialsSignInForm = () => {
-  const [data, action] = useActionState(signInWithCredentials, {
-    success: false,
-    message: '',
-  });
+  const [data, action] = useActionState(
+    async (
+      state: {
+        success: boolean;
+        message: string;
+        formData: {
+          email: string;
+          password: string;
+        };
+      },
+      formData: FormData
+    ) => await signInWithCredentials(state, formData),
+    {
+      success: false,
+      message: '',
+      formData: {
+        email: '',
+        password: '',
+      },
+    }
+  );
+
+
 
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get('callbackUrl') || '/';
