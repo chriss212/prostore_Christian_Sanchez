@@ -1,317 +1,215 @@
 'use server';
 
-import { convertToPlainObject, formatError } from '../utils';
-import { auth } from '@/auth';
-import { getMyCart } from './cart.actions';
-import { getUserById } from './user.actions';
-import { insertOrderSchema } from '../validators';
-import { prisma } from '@/db/prisma';
-import { CartItem, PaymentResult, ShippingAddress } from '@/types';
-import { paypal } from '../paypal';
-import { revalidatePath } from 'next/cache';
-import { PAGE_SIZE } from '../constants';
-import { Prisma } from '@prisma/client';
-import { sendPurchaseReceipt } from '@/email';
+import {
+  shippingAddressSchema,
+  signInFormSchema,
+  signUpFormSchema,
+  paymentMethodSchema,
+  updateUserSchema,
+} from '../validators';
+import { auth, signIn, signOut } from '@/auth';
 
-export async function createOrder() {
+import { hash } from '../encrypt';
+import { prisma } from '@/db/prisma';
+import { formatError } from '../utils';
+import { ShippingAddress } from '@/types';
+import { z } from 'zod';
+import { PAGE_SIZE } from '../constants';
+import { revalidatePath } from 'next/cache';
+import { Prisma } from '@prisma/client';
+import { getMyCart } from './cart.actions';
+import { redirect } from 'next/navigation';
+
+// Sign in the user with credentials
+export async function signInWithCredentials(
+  prevState: unknown,
+  formData: FormData
+) {
+  try {
+    const user = signInFormSchema.parse({
+      email: formData.get('email'),
+      password: formData.get('password'),
+    });
+
+    await signIn('credentials', user);
+
+    return {
+      success: true,
+      message: 'Signed in successfully',
+      formData: {
+        email: '',
+        password: '',
+      },
+    };
+  } catch {
+    return {
+      success: false,
+      message: 'Invalid email or password',
+      formData: {
+        email: (formData.get('email') as string) || '',
+        password: (formData.get('password') as string) || '',
+      },
+    };
+  }
+}
+
+// Sign user out
+export async function signOutUser() {
+  // get current users cart and delete it so it does not persist to next user
+  const currentCart = await getMyCart();
+
+  if (currentCart?.id) {
+    await prisma.cart.delete({ where: { id: currentCart.id } });
+  } else {
+    console.warn('No cart found for deletion.');
+  }
+  await signOut();
+}
+
+// Sign up user
+export async function signUpUser(prevState: unknown, formData: FormData) {
+  try {
+    const user = signUpFormSchema.parse({
+      name: formData.get('name'),
+      email: formData.get('email'),
+      password: formData.get('password'),
+      confirmPassword: formData.get('confirmPassword'),
+    });
+
+    const plainPassword = user.password;
+    const callbackUrl = (formData.get('callbackUrl') as string) || '/';
+
+    user.password = await hash(user.password);
+
+    await prisma.user.create({
+      data: {
+        name: user.name,
+        email: user.email,
+        password: user.password,
+      },
+    });
+
+    // Sign in the user after successful registration
+    await signIn('credentials', {
+      email: user.email,
+      password: plainPassword,
+      redirect: false, // Don't redirect automatically
+    });
+
+    // Redirect to the callback URL or home page
+    redirect(callbackUrl);
+  } catch (error) {
+    // Return the form data so the form can preserve user input
+    return {
+      success: false,
+      message: formatError(error),
+      formData: {
+        name: (formData.get('name') as string) || '',
+        email: (formData.get('email') as string) || '',
+        password: (formData.get('password') as string) || '',
+        confirmPassword: (formData.get('confirmPassword') as string) || '',
+      },
+    };
+  }
+}
+
+// Get user by the ID
+export async function getUserById(userId: string) {
+  const user = await prisma.user.findFirst({
+    where: { id: userId },
+  });
+  if (!user) throw new Error('User not found');
+  return user;
+}
+
+// Update the user's address
+export async function updateUserAddress(data: ShippingAddress) {
   try {
     const session = await auth();
-    if (!session) throw new Error('User is not authenticated');
 
-    const cart = await getMyCart();
-    const userId = session?.user?.id;
-    if (!userId) throw new Error('User not found');
-
-    const user = await getUserById(userId);
-
-    if (!cart || cart.items.length === 0) {
-      return {
-        success: false,
-        message: 'Your cart is empty',
-        redirectTo: '/cart',
-      };
-    }
-
-    if (!user.address) {
-      return {
-        success: false,
-        message: 'No shipping address',
-        redirectTo: '/shipping-address',
-      };
-    }
-
-    if (!user.paymentMethod) {
-      return {
-        success: false,
-        message: 'No payment method',
-        redirectTo: '/payment-method',
-      };
-    }
-
-    const order = insertOrderSchema.parse({
-      userId: user.id,
-      shippingAddress: user.address,
-      paymentMethod: user.paymentMethod,
-      itemsPrice: cart.itemsPrice,
-      shippingPrice: cart.shippingPrice,
-      taxPrice: cart.taxPrice,
-      totalPrice: cart.totalPrice,
+    const currentUser = await prisma.user.findFirst({
+      where: { id: session?.user?.id },
     });
 
-    const insertedOrderId = await prisma.$transaction(async (tx) => {
-      const insertedOrder = await tx.order.create({ data: order });
-      for (const item of cart.items as CartItem[]) {
-        await tx.orderItem.create({
-          data: {
-            ...item,
-            price: item.price,
-            orderId: insertedOrder.id,
-          },
-        });
-      }
+    if (!currentUser) throw new Error('User not found');
 
-      await tx.cart.update({
-        where: { id: cart.id },
-        data: {
-          items: [],
-          totalPrice: 0,
-          taxPrice: 0,
-          shippingPrice: 0,
-          itemsPrice: 0,
-        },
-      });
+    const address = shippingAddressSchema.parse(data);
 
-      return insertedOrder.id;
+    await prisma.user.update({
+      where: { id: currentUser.id },
+      data: { address },
     });
-
-    if (!insertedOrderId) throw new Error('Order not created');
 
     return {
       success: true,
-      message: 'Order created',
-      redirectTo: `/order/${insertedOrderId}`,
+      message: 'User updated successfully',
     };
   } catch (error) {
-    console.error(error);
     return { success: false, message: formatError(error) };
   }
 }
 
-export async function getOrderById(orderId: string) {
-  const data = await prisma.order.findFirst({
-    where: {
-      id: orderId,
-    },
-    include: {
-      orderitems: true,
-      user: { select: { name: true, email: true } },
-    },
-  });
+// Update user's payment method
+export async function updateUserPaymentMethod(
+  data: z.infer<typeof paymentMethodSchema>
+) {
+  try {
+    const session = await auth();
+    const currentUser = await prisma.user.findFirst({
+      where: { id: session?.user?.id },
+    });
 
-  return convertToPlainObject(data);
+    if (!currentUser) throw new Error('User not found');
+
+    const paymentMethod = paymentMethodSchema.parse(data);
+
+    await prisma.user.update({
+      where: { id: currentUser.id },
+      data: { paymentMethod: paymentMethod.type },
+    });
+
+    return {
+      success: true,
+      message: 'User updated successfully',
+    };
+  } catch (error) {
+    return { success: false, message: formatError(error) };
+  }
 }
 
-export async function createPayPalOrder(orderId: string) {
+// Update the user profile
+export async function updateProfile(user: { name: string; email: string }) {
   try {
-    const order = await prisma.order.findFirst({
+    const session = await auth();
+
+    const currentUser = await prisma.user.findFirst({
       where: {
-        id: orderId,
+        id: session?.user?.id,
       },
     });
 
-    if (order) {
-      const paypalOrder = await paypal.createOrder(Number(order.totalPrice));
+    if (!currentUser) throw new Error('User not found');
 
-      await prisma.order.update({
-        where: { id: orderId },
-        data: {
-          paymentResult: {
-            id: paypalOrder.id,
-            email_address: '',
-            status: '',
-            pricePaid: 0,
-          },
-        },
-      });
-
-      return {
-        success: true,
-        message: 'Item order created successfully',
-        data: paypalOrder.id,
-      };
-    } else {
-      throw new Error('Order not found');
-    }
-  } catch (error) {
-    console.error(error);
-    return { success: false, message: formatError(error) };
-  }
-}
-
-export async function approvePayPalOrder(orderId: string, data: { orderID: string }) {
-  try {
-    const order = await prisma.order.findFirst({
-      where: { id: orderId },
-    });
-
-    if (!order) throw new Error('Order not found');
-
-    const captureData = await paypal.capturePayment(data.orderID);
-
-    if (
-      !captureData ||
-      captureData.id !== (order.paymentResult as PaymentResult)?.id ||
-      captureData.status !== 'COMPLETED'
-    ) {
-      throw new Error('Error in PayPal payment');
-    }
-
-    await updateOrderToPaid({
-      orderId,
-      paymentResult: {
-        id: captureData.id,
-        status: captureData.status,
-        email_address: captureData.payer.email_address,
-        pricePaid:
-          captureData.purchase_units[0]?.payments?.captures[0]?.amount?.value,
+    await prisma.user.update({
+      where: {
+        id: currentUser.id,
+      },
+      data: {
+        name: user.name,
       },
     });
-
-    revalidatePath(`/order/${orderId}`);
 
     return {
       success: true,
-      message: 'Your order has been paid',
+      message: 'User updated successfully',
     };
   } catch (error) {
-    console.error(error);
     return { success: false, message: formatError(error) };
   }
 }
 
-export async function updateOrderToPaid({
-  orderId,
-  paymentResult,
-}: {
-  orderId: string;
-  paymentResult?: PaymentResult;
-}) {
-  const order = await prisma.order.findFirst({
-    where: { id: orderId },
-    include: {
-      orderitems: true,
-    },
-  });
-
-  if (!order) throw new Error('Order not found');
-  if (order.isPaid) throw new Error('Order is already paid');
-
-  await prisma.$transaction(async (tx) => {
-    for (const item of order.orderitems) {
-      await tx.product.update({
-        where: { id: item.productId },
-        data: { stock: { increment: -item.qty } },
-      });
-    }
-
-    await tx.order.update({
-      where: { id: orderId },
-      data: {
-        isPaid: true,
-        paidAt: new Date(),
-        paymentResult,
-      },
-    });
-  });
-
-  const updatedOrder = await prisma.order.findFirst({
-    where: { id: orderId },
-    include: {
-      orderitems: true,
-      user: { select: { name: true, email: true } },
-    },
-  });
-
-  if (!updatedOrder) throw new Error('Order not found');
-
-  sendPurchaseReceipt({
-    order: {
-      ...updatedOrder,
-      shippingAddress: updatedOrder.shippingAddress as ShippingAddress,
-      paymentResult: updatedOrder.paymentResult as PaymentResult,
-    },
-  });
-}
-
-export async function getMyOrders({
-  limit = PAGE_SIZE,
-  page,
-}: {
-  limit?: number;
-  page: number;
-}) {
-  const session = await auth();
-  if (!session) throw new Error('User is not authorized');
-
-  const data = await prisma.order.findMany({
-    where: { userId: session?.user?.id },
-    orderBy: { createdAt: 'desc' },
-    take: limit,
-    skip: (page - 1) * limit,
-  });
-
-  const dataCount = await prisma.order.count({
-    where: { userId: session?.user?.id },
-  });
-
-  return {
-    data,
-    totalPages: Math.ceil(dataCount / limit),
-  };
-}
-
-type SalesDataType = {
-  month: string;
-  totalSales: number;
-}[];
-
-export async function getOrderSummary() {
-  const ordersCount = await prisma.order.count();
-  const productsCount = await prisma.product.count();
-  const usersCount = await prisma.user.count();
-
-  const totalSales = await prisma.order.aggregate({
-    _sum: { totalPrice: true },
-  });
-
-  const salesDataRaw = await prisma.$queryRaw<
-    Array<{ month: string; totalSales: Prisma.Decimal }>
-  >`SELECT to_char("createdAt", 'MM/YY') as "month", sum("totalPrice") as "totalSales" FROM "Order" GROUP BY to_char("createdAt", 'MM/YY')`;
-
-  const salesData: SalesDataType = salesDataRaw.map((entry) => ({
-    month: entry.month,
-    totalSales: Number(entry.totalSales),
-  }));
-
-  const latestSales = await prisma.order.findMany({
-    orderBy: { createdAt: 'desc' },
-    include: {
-      user: { select: { name: true } },
-    },
-    take: 6,
-  });
-
-  return {
-    ordersCount,
-    productsCount,
-    usersCount,
-    totalSales,
-    latestSales,
-    salesData,
-  };
-}
-
-export async function getAllOrders({
+// Get all the users
+export async function getAllUsers({
   limit = PAGE_SIZE,
   page,
   query,
@@ -320,29 +218,26 @@ export async function getAllOrders({
   page: number;
   query: string;
 }) {
-  const queryFilter: Prisma.OrderWhereInput =
+  const queryFilter: Prisma.UserWhereInput =
     query && query !== 'all'
       ? {
-          user: {
-            name: {
-              contains: query,
-              mode: 'insensitive',
-            } as Prisma.StringFilter,
-          },
+          name: {
+            contains: query,
+            mode: 'insensitive',
+          } as Prisma.StringFilter,
         }
       : {};
 
-  const data = await prisma.order.findMany({
+  const data = await prisma.user.findMany({
     where: {
       ...queryFilter,
     },
     orderBy: { createdAt: 'desc' },
     take: limit,
     skip: (page - 1) * limit,
-    include: { user: { select: { name: true } } },
   });
 
-  const dataCount = await prisma.order.count();
+  const dataCount = await prisma.user.count();
 
   return {
     data,
@@ -350,62 +245,43 @@ export async function getAllOrders({
   };
 }
 
-export async function deleteOrder(id: string) {
+// Delete a user
+export async function deleteUser(id: string) {
   try {
-    await prisma.order.delete({ where: { id } });
+    await prisma.user.delete({ where: { id } });
 
-    revalidatePath('/admin/orders');
+    revalidatePath('/admin/users');
 
     return {
       success: true,
-      message: 'Order deleted successfully',
+      message: 'User deleted successfully',
     };
   } catch (error) {
-    console.error(error);
-    return { success: false, message: formatError(error) };
+    return {
+      success: false,
+      message: formatError(error),
+    };
   }
 }
 
-export async function updateOrderToPaidCOD(orderId: string) {
+// Update a user
+export async function updateUser(user: z.infer<typeof updateUserSchema>) {
   try {
-    await updateOrderToPaid({ orderId });
-
-    revalidatePath(`/order/${orderId}`);
-
-    return { success: true, message: 'Order marked as paid' };
-  } catch (error) {
-    console.error(error);
-    return { success: false, message: formatError(error) };
-  }
-}
-
-export async function deliverOrder(orderId: string) {
-  try {
-    const order = await prisma.order.findFirst({
-      where: {
-        id: orderId,
-      },
-    });
-
-    if (!order) throw new Error('Order not found');
-    if (!order.isPaid) throw new Error('Order is not paid');
-
-    await prisma.order.update({
-      where: { id: orderId },
+    await prisma.user.update({
+      where: { id: user.id },
       data: {
-        isDelivered: true,
-        deliveredAt: new Date(),
+        name: user.name,
+        role: user.role,
       },
     });
 
-    revalidatePath(`/order/${orderId}`);
+    revalidatePath('/admin/users');
 
     return {
       success: true,
-      message: 'Order has been marked delivered',
+      message: 'User updated successfully',
     };
   } catch (error) {
-    console.error(error);
     return { success: false, message: formatError(error) };
   }
 }
